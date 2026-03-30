@@ -186,6 +186,15 @@ def model_short(models):
 
 # ── Views ─────────────────────────────────────────────────────────────────────
 
+def fmt_tok(n):
+    """Format token count as human-readable (e.g. 84.3M, 423.9K)."""
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n/1_000:.1f}K"
+    return str(n)
+
+
 def view_daily(records, days=30):
     from datetime import date, timedelta
     today = date.today()
@@ -194,29 +203,36 @@ def view_daily(records, days=30):
 
     agg = agg_key(records, lambda r: r["date"])
 
-    print(f"\n{'Date':<12} {'Sessions':>8} {'Input':>10} {'Output':>9} {'CacheCreate':>12} {'CacheRead':>13} {'HitRatio':>9} {'Cost(USD)':>11}  Models")
-    print("─" * 104)
+    # total_input = inp (fresh) + cc (cache write) + cr (cache read)
+    # This is what the model actually processed on input side
+    print(f"\n{'Date':<12} {'Sess':>5} {'TotalInput':>11} {'Output':>9} {'(CacheHit%)':>12} {'Total':>10} {'Cost(USD)':>11}  Models")
+    print(f"{'':12} {'':5} {'=inp+cc+cr':>11} {'':9} {'cr/(inp+cc+cr)':>12} {'':10}")
+    print("─" * 95)
 
     total_cost = 0.0
     for d in sorted(agg.keys(), reverse=True):
         a = agg[d]
         c = cost(a["inp"], a["out"], a["cc"], a["cr"])
         total_cost += c
+        total_inp = a["inp"] + a["cc"] + a["cr"]
+        total_all = total_inp + a["out"]
         hr = hit_ratio(a["inp"], a["cc"], a["cr"])
         models = model_short(a["models"])
         nsess = len(a["sessions"])
-        print(f"{d:<12} {nsess:>8} {a['inp']:>10,} {a['out']:>9,} {a['cc']:>12,} {a['cr']:>13,} {hr:>8.1f}% ${c:>10.4f}  {models}")
+        print(f"{d:<12} {nsess:>5} {fmt_tok(total_inp):>11} {fmt_tok(a['out']):>9} {hr:>11.1f}% {fmt_tok(total_all):>10} ${c:>10.4f}  {models}")
 
-    print("─" * 104)
-    # totals
+    print("─" * 95)
     all_inp = sum(a["inp"] for a in agg.values())
     all_out = sum(a["out"] for a in agg.values())
     all_cc  = sum(a["cc"]  for a in agg.values())
     all_cr  = sum(a["cr"]  for a in agg.values())
+    all_total_inp = all_inp + all_cc + all_cr
+    all_total = all_total_inp + all_out
     all_hr  = hit_ratio(all_inp, all_cc, all_cr)
-    all_sess = len({sid for r in records for sid in [r["session_id"]]})
-    print(f"{'TOTAL':<12} {all_sess:>8} {all_inp:>10,} {all_out:>9,} {all_cc:>12,} {all_cr:>13,} {all_hr:>8.1f}% ${total_cost:>10.4f}")
-    print(f"\nNote: OpenClaw gateway API calls are NOT included (direct Anthropic API, not logged by Claude Code)")
+    all_sess = len({r["session_id"] for r in records})
+    print(f"{'TOTAL':<12} {all_sess:>5} {fmt_tok(all_total_inp):>11} {fmt_tok(all_out):>9} {all_hr:>11.1f}% {fmt_tok(all_total):>10} ${total_cost:>10.4f}")
+    print(f"\n  TotalInput breakdown: fresh={fmt_tok(all_inp)}  cache_write={fmt_tok(all_cc)}  cache_read={fmt_tok(all_cr)}")
+    print(f"  Note: OpenClaw gateway calls NOT included (direct Anthropic API, not logged locally)")
 
 
 def view_sessions(records, target_date):
@@ -246,10 +262,10 @@ def view_sessions(records, target_date):
             times[k]["end"] = ts
 
     print(f"\nSessions on {target_date}")
-    print("─" * 120)
-    header = f"{'Time':<13} {'Project':<20} {'Messages':>8} {'Input':>9} {'Output':>8} {'CacheCreate':>12} {'CacheRead':>13} {'HR%':>5} {'Cost':>9}  {'Models':<12}  Topic"
+    print("─" * 110)
+    header = f"{'Time':<7} {'Project':<18} {'Msgs':>5} {'TotalInput':>11} {'Output':>9} {'CacheHit%':>10} {'Total':>9} {'Cost':>9}  {'Models':<10}  Topic"
     print(header)
-    print("─" * 120)
+    print("─" * 110)
 
     # sort by start time
     keys_sorted = sorted(agg.keys(), key=lambda k: times[k]["start"] or datetime.min)
@@ -260,22 +276,26 @@ def view_sessions(records, target_date):
         a = agg[key]
         c = cost(a["inp"], a["out"], a["cc"], a["cr"])
         total_cost += c
+        total_inp = a["inp"] + a["cc"] + a["cr"]
+        total_all = total_inp + a["out"]
         hr = hit_ratio(a["inp"], a["cc"], a["cr"])
         models = model_short(a["models"])
         start = times[key]["start"]
         time_str = start.strftime("%H:%M") if start else "?"
-        nsess = len(a["sessions"])  # always 1 here
         msg_count = sum(1 for r in day_records if (r["project"], r["session_id"]) == key)
-        topic = first_msgs.get(key, "")[:50]
-        print(f"{time_str:<13} {proj:<20} {msg_count:>8} {a['inp']:>9,} {a['out']:>8,} {a['cc']:>12,} {a['cr']:>13,} {hr:>4.0f}% ${c:>8.4f}  {models:<12}  {topic}")
+        topic = first_msgs.get(key, "")[:45]
+        print(f"{time_str:<7} {proj:<18} {msg_count:>5} {fmt_tok(total_inp):>11} {fmt_tok(a['out']):>9} {hr:>9.1f}% {fmt_tok(total_all):>9} ${c:>8.4f}  {models:<10}  {topic}")
 
-    print("─" * 120)
+    print("─" * 110)
     all_inp = sum(a["inp"] for a in agg.values())
     all_out = sum(a["out"] for a in agg.values())
     all_cc  = sum(a["cc"]  for a in agg.values())
     all_cr  = sum(a["cr"]  for a in agg.values())
+    all_total_inp = all_inp + all_cc + all_cr
+    all_total = all_total_inp + all_out
     all_hr  = hit_ratio(all_inp, all_cc, all_cr)
-    print(f"{'TOTAL':<34} {all_inp:>9,} {all_out:>8,} {all_cc:>12,} {all_cr:>13,} {all_hr:>4.0f}% ${total_cost:>8.4f}")
+    print(f"{'TOTAL':<31} {fmt_tok(all_total_inp):>11} {fmt_tok(all_out):>9} {all_hr:>9.1f}% {fmt_tok(all_total):>9} ${total_cost:>8.4f}")
+    print(f"\n  TotalInput = fresh({fmt_tok(all_inp)}) + cache_write({fmt_tok(all_cc)}) + cache_read({fmt_tok(all_cr)})")
 
 
 def view_model_breakdown(records, days=30):
@@ -287,13 +307,15 @@ def view_model_breakdown(records, days=30):
     agg = agg_key(records, lambda r: r["model"])
 
     print(f"\nModel breakdown (last {days} days)")
-    print("─" * 80)
-    print(f"{'Model':<35} {'Input':>10} {'Output':>9} {'CacheRead':>13} {'Cost(USD)':>11}")
-    print("─" * 80)
+    print("─" * 85)
+    print(f"{'Model':<35} {'TotalInput':>11} {'Output':>9} {'Total':>9} {'Cost(USD)':>11}")
+    print("─" * 85)
     for m in sorted(agg.keys()):
         a = agg[m]
         c = cost(a["inp"], a["out"], a["cc"], a["cr"])
-        print(f"{m:<35} {a['inp']:>10,} {a['out']:>9,} {a['cr']:>13,} ${c:>10.4f}")
+        total_inp = a["inp"] + a["cc"] + a["cr"]
+        total_all = total_inp + a["out"]
+        print(f"{m:<35} {fmt_tok(total_inp):>11} {fmt_tok(a['out']):>9} {fmt_tok(total_all):>9} ${c:>10.4f}")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
