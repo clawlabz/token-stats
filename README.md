@@ -48,19 +48,13 @@ Column reference:
 
 ## Installation
 
-1. **Clone or download** this repo
-2. **Copy the script** to `~/.claude/scripts/`:
-   ```bash
-   mkdir -p ~/.claude/scripts
-   cp token-stats.py ~/.claude/scripts/
-   ```
-3. **Copy the command** to `~/.claude/commands/`:
-   ```bash
-   mkdir -p ~/.claude/commands
-   cp token-stats.md ~/.claude/commands/
-   ```
+```bash
+curl -fsSL https://raw.githubusercontent.com/clawlabz/claude-token-stats/main/install.sh | bash
+```
 
-That's it. The `/token-stats` command is now available in any Claude Code session.
+Restart Claude Code — `/token-stats` is ready.
+
+> The command also **self-heals**: if the script is ever missing, it re-downloads automatically on the next `/token-stats` run.
 
 ## Usage
 
