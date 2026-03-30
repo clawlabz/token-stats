@@ -29,11 +29,16 @@ CLAUDE_PRICE = {
     "cache_read":   0.30 / 1_000_000,
 }
 
-# Codex CLI — pricing unknown as of 2026-03-30; update when OpenAI publishes
-CODEX_PRICE = {
-    "input":      0.0 / 1_000_000,
-    "output":     0.0 / 1_000_000,
-    "cache_read": 0.0 / 1_000_000,
+# OpenAI model pricing (per token, USD) — source: developers.openai.com/api/docs/pricing
+OPENAI_PRICE = {
+    "gpt-5.4":             {"input": 2.50/1e6, "output": 15.00/1e6, "cache_read": 0.250/1e6},
+    "gpt-5.4-mini":        {"input": 0.75/1e6, "output":  4.50/1e6, "cache_read": 0.075/1e6},
+    "gpt-5.4-nano":        {"input": 0.20/1e6, "output":  1.25/1e6, "cache_read": 0.020/1e6},
+    "gpt-5.4-pro":         {"input":30.00/1e6, "output":180.00/1e6, "cache_read": 0.000/1e6},
+    "gpt-5.3-codex":       {"input": 1.75/1e6, "output": 14.00/1e6, "cache_read": 0.175/1e6},
+    "gpt-5.3-chat-latest": {"input": 1.75/1e6, "output": 14.00/1e6, "cache_read": 0.175/1e6},
+    # fallback for unknown OpenAI models
+    "_default":            {"input": 0.00/1e6, "output":  0.00/1e6, "cache_read": 0.000/1e6},
 }
 
 PROJECTS_DIR    = os.path.expanduser("~/.claude/projects")
@@ -51,10 +56,9 @@ def _claude_cost(inp, out, cc, cr):
           + cr  * CLAUDE_PRICE["cache_read"])
 
 
-def _codex_cost(inp, out, cr):
-    return (inp * CODEX_PRICE["input"]
-          + out * CODEX_PRICE["output"]
-          + cr  * CODEX_PRICE["cache_read"])
+def _codex_cost(inp, out, cr, model=""):
+    p = OPENAI_PRICE.get(model) or OPENAI_PRICE["_default"]
+    return (inp * p["input"] + out * p["output"] + cr * p["cache_read"])
 
 
 def compute_record_cost(r):
@@ -64,7 +68,7 @@ def compute_record_cost(r):
         return float(r.get("cost_usd", 0.0)), False
     # Estimate from token counts
     if r.get("source", "") == "codex":
-        return _codex_cost(r["inp"], r["out"], r["cr"]), True
+        return _codex_cost(r["inp"], r["out"], r["cr"], r.get("model", "")), True
     return _claude_cost(r["inp"], r["out"], r["cc"], r["cr"]), True
 
 
@@ -310,6 +314,7 @@ def _parse_codex_jsonl(fpath, session_id, project_filter):
     records = []
     last_model = "codex/unknown"
     last_cwd = ""
+    prev_lu_key = None  # for deduplicating repeated token_count events
     try:
         with open(fpath, encoding="utf-8") as fp:
             for line in fp:
@@ -328,11 +333,19 @@ def _parse_codex_jsonl(fpath, session_id, project_filter):
                     if not info:
                         continue
                     lu = info.get("last_token_usage") or {}
-                    inp = int(lu.get("input_tokens", 0) or 0)
-                    out = int(lu.get("output_tokens", 0) or 0)
+                    # Codex logs each API response twice; skip exact duplicates
+                    lu_key = (lu.get("input_tokens"), lu.get("output_tokens"),
+                              lu.get("cached_input_tokens"), lu.get("reasoning_output_tokens"))
+                    if lu_key == prev_lu_key:
+                        continue
+                    prev_lu_key = lu_key
+                    # OpenAI: input_tokens = fresh + cached; store fresh separately
+                    total_inp = int(lu.get("input_tokens", 0) or 0)
                     cr  = int(lu.get("cached_input_tokens", 0) or 0)
+                    inp = total_inp - cr   # fresh input only
+                    out = int(lu.get("output_tokens", 0) or 0)
                     rsn = int(lu.get("reasoning_output_tokens", 0) or 0)
-                    if inp == 0 and out == 0:
+                    if total_inp == 0 and out == 0:
                         continue
                     if project_filter and project_filter.lower() not in last_cwd.lower():
                         continue
@@ -463,6 +476,21 @@ def model_short(model_tokens):
 
 # ── Views ─────────────────────────────────────────────────────────────────────
 
+def _empty_totals():
+    return {"inp": 0, "out": 0, "cc": 0, "cr": 0, "cost": 0.0,
+            "any_est": False, "sessions": set(), "model_tokens": defaultdict(int)}
+
+
+def _accum(totals, a):
+    totals["inp"]  += a["inp"];  totals["out"] += a["out"]
+    totals["cc"]   += a["cc"];   totals["cr"]  += a["cr"]
+    totals["cost"] += a["cost"]
+    totals["any_est"] = totals["any_est"] or a["any_estimated"]
+    totals["sessions"].update(a["sessions"])
+    for m, t in a["model_tokens"].items():
+        totals["model_tokens"][m] += t
+
+
 def view_daily(records, days=30):
     from datetime import date, timedelta
     today    = date.today()
@@ -471,7 +499,6 @@ def view_daily(records, days=30):
 
     # Detect active sources for footer
     active_sources = {r.get("source", "claude") for r in records}
-    has_openclaw   = any(s.startswith(("openclaw/", "qclaw/")) for s in active_sources)
     has_codex      = "codex" in active_sources
     has_gpt_zero   = any(
         r.get("source", "").startswith(("openclaw/", "qclaw/"))
@@ -480,60 +507,78 @@ def view_daily(records, days=30):
         for r in records
     )
 
-    # Group by (date, source)
-    by_date_source = agg_records(records, lambda r: (r["date"], r.get("source", "claude")))
+    def top_src(r):
+        return r.get("source", "claude").split("/")[0]
 
-    # Collect all dates
-    all_dates = sorted({k[0] for k in by_date_source.keys()}, reverse=True)
+    # Group by (date, top_source) for main rows
+    by_date_top = agg_records(records, lambda r: (r["date"], top_src(r)))
+    # Group by (date, full_source) for sub-rows (openclaw/agent etc.)
+    by_date_src = agg_records(records, lambda r: (r["date"], r.get("source", "claude")))
+
+    all_dates = sorted({k[0] for k in by_date_top.keys()}, reverse=True)
 
     W_SRC  = 22
     W_DATE = 12
     LINE_W = W_DATE + W_SRC + 68
     sep    = "─" * LINE_W
 
+    def fmt_row(date_col, src_col, a):
+        t_inp  = a["inp"] + a["cc"] + a["cr"]
+        t_all  = t_inp + a["out"]
+        hr     = hit_ratio(a["inp"], a["cc"], a["cr"])
+        nsess  = len(a["sessions"])
+        cost_s = fmt_cost(a["cost"], a["any_estimated"])
+        models = model_short(a["model_tokens"])
+        print(f"{date_col:<{W_DATE}} {src_col:<{W_SRC}} {nsess:>5} {fmt_tok(t_inp):>11} {fmt_tok(a['out']):>9} {hr:>9.1f}% {fmt_tok(t_all):>9}  {cost_s}  {models}")
+
     print(f"\n{'Date':<{W_DATE}} {'Source':<{W_SRC}} {'Sess':>5} {'TotalInput':>11} {'Output':>9} {'CacheHit%':>10} {'Total':>9}  {'Cost':>12}  Models")
     print(sep)
 
-    grand = {"inp":0,"out":0,"cc":0,"cr":0,"cost":0.0,"any_estimated":False,"sessions":set(),"model_tokens":defaultdict(int)}
+    grand = _empty_totals()
 
     for d in all_dates:
-        # Collect sources for this date, sorted
-        date_sources = sorted(k[1] for k in by_date_source if k[0] == d)
-        date_totals  = {"inp":0,"out":0,"cc":0,"cr":0,"cost":0.0,"any_est":False,"sessions":set(),"model_tokens":defaultdict(int)}
+        top_sources  = sorted({k[1] for k in by_date_top if k[0] == d})
+        date_totals  = _empty_totals()
+        date_printed = False  # show date only on first row of each day
 
-        for src in date_sources:
-            a       = by_date_source[(d, src)]
-            t_inp   = a["inp"] + a["cc"] + a["cr"]
-            t_all   = t_inp + a["out"]
-            hr      = hit_ratio(a["inp"], a["cc"], a["cr"])
-            models  = model_short(a["model_tokens"])
-            nsess   = len(a["sessions"])
-            cost_s  = fmt_cost(a["cost"], a["any_estimated"])
-            print(f"{d:<{W_DATE}} {src:<{W_SRC}} {nsess:>5} {fmt_tok(t_inp):>11} {fmt_tok(a['out']):>9} {hr:>9.1f}% {fmt_tok(t_all):>9}  {cost_s}  {models}")
-            # accumulate date totals
-            date_totals["inp"]  += a["inp"]; date_totals["out"] += a["out"]
-            date_totals["cc"]   += a["cc"];  date_totals["cr"]  += a["cr"]
-            date_totals["cost"] += a["cost"]
-            date_totals["any_est"] = date_totals["any_est"] or a["any_estimated"]
-            date_totals["sessions"].update(a["sessions"])
-            for m, t in a["model_tokens"].items():
-                date_totals["model_tokens"][m] += t
+        def date_col():
+            nonlocal date_printed
+            if not date_printed:
+                date_printed = True
+                return d
+            return ""
 
-        # If multiple sources on this date, print a day total row
-        if len(date_sources) > 1:
+        for tsrc in top_sources:
+            a = by_date_top[(d, tsrc)]
+            fmt_row(date_col(), tsrc, a)
+            _accum(date_totals, a)
+
+            # Sub-rows for openclaw/* and qclaw/* agents
+            if tsrc in ("openclaw", "qclaw"):
+                sub_sources = sorted(
+                    k[1] for k in by_date_src
+                    if k[0] == d and k[1].startswith(tsrc + "/")
+                )
+                if len(sub_sources) > 1:
+                    for src in sub_sources:
+                        sub_a = by_date_src[(d, src)]
+                        agent = src[len(tsrc):]   # "/main", "/ifig", etc.
+                        fmt_row("", f"  {agent}", sub_a)
+
+        # Day total row if multiple top-level sources
+        if len(top_sources) > 1:
             t_inp  = date_totals["inp"] + date_totals["cc"] + date_totals["cr"]
             t_all  = t_inp + date_totals["out"]
             hr     = hit_ratio(date_totals["inp"], date_totals["cc"], date_totals["cr"])
             models = model_short(date_totals["model_tokens"])
             nsess  = len(date_totals["sessions"])
             cost_s = fmt_cost(date_totals["cost"], date_totals["any_est"])
-            print(f"{d:<{W_DATE}} {'  ALL':<{W_SRC}} {nsess:>5} {fmt_tok(t_inp):>11} {fmt_tok(date_totals['out']):>9} {hr:>9.1f}% {fmt_tok(t_all):>9}  {cost_s}  {models}")
+            print(f"{date_col():<{W_DATE}} {'  ALL':<{W_SRC}} {nsess:>5} {fmt_tok(t_inp):>11} {fmt_tok(date_totals['out']):>9} {hr:>9.1f}% {fmt_tok(t_all):>9}  {cost_s}  {models}")
 
-        # Accumulate grand totals
-        grand["inp"]  += date_totals["inp"]; grand["out"] += date_totals["out"]
-        grand["cc"]   += date_totals["cc"];  grand["cr"]  += date_totals["cr"]
+        grand["inp"]  += date_totals["inp"];  grand["out"] += date_totals["out"]
+        grand["cc"]   += date_totals["cc"];   grand["cr"]  += date_totals["cr"]
         grand["cost"] += date_totals["cost"]
-        grand["any_estimated"] = grand["any_estimated"] or date_totals["any_est"]
+        grand["any_est"] = grand["any_est"] or date_totals["any_est"]
         grand["sessions"].update(date_totals["sessions"])
         for m, t in date_totals["model_tokens"].items():
             grand["model_tokens"][m] += t
@@ -543,7 +588,7 @@ def view_daily(records, days=30):
     g_all  = g_inp + grand["out"]
     g_hr   = hit_ratio(grand["inp"], grand["cc"], grand["cr"])
     g_sess = len(grand["sessions"])
-    g_cost = fmt_cost(grand["cost"], grand["any_estimated"])
+    g_cost = fmt_cost(grand["cost"], grand["any_est"])
     g_mod  = model_short(grand["model_tokens"])
     print(f"{'TOTAL':<{W_DATE}} {'':<{W_SRC}} {g_sess:>5} {fmt_tok(g_inp):>11} {fmt_tok(grand['out']):>9} {g_hr:>9.1f}% {fmt_tok(g_all):>9}  {g_cost}  {g_mod}")
 
@@ -553,7 +598,7 @@ def view_daily(records, days=30):
     if has_gpt_zero:
         print(f"  OpenClaw non-Anthropic models: tokens counted, cost = $0.0000 (no local pricing)")
     if has_codex:
-        print(f"  Codex CLI: cost shown as ~$0 (pricing not yet published by OpenAI)")
+        print(f"  Codex CLI: ~$ estimated from openai.com/api/pricing (models without listed price shown as $0)")
 
 
 def view_sessions(records, target_date):

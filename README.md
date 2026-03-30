@@ -15,42 +15,23 @@ A Claude Code slash command (`/token-stats`) that shows your AI token usage, cac
 
 ## What it shows
 
-**Daily summary** (default):
+**Daily summary** — aggregated by source, with per-agent breakdown for OpenClaw:
 
-```
-Date         Source             Sess  TotalInput    Output  CacheHit%     Total          Cost  Models
-──────────────────────────────────────────────────────────────────────────────────────────────────────
-2026-03-30   claude               12      108.9M    297.7K      97.7%    109.2M  ~$  45.78  Sonnet4.6
-2026-03-30   openclaw/main        37       20.1M    815.8K      56.5%     20.9M   $  48.45  Sonnet4.6
-2026-03-30   openclaw/ifig       111        5.7M     18.6K      93.0%      5.7M  ~$   3.35  Sonnet4.6
-2026-03-30   codex                 3        7.5M     55.5K      40.8%      7.5M  ~$   0.00  GPT5.4
-2026-03-30     ALL               163      142.2M      1.2M      88.7%    143.4M  ~$  97.58  Sonnet4.6+GPT5.4
-──────────────────────────────────────────────────────────────────────────────────────────────────────
-TOTAL                             163      142.2M      1.2M      88.7%    143.4M  ~$  97.58
+![3-day daily summary](https://raw.githubusercontent.com/clawlabz/token-stats/main/screenshots/day3.jpg)
 
-  TotalInput = fresh(12.1M) + cache_write(20.0M) + cache_read(110.1M)
-  Cost legend:  $ = stored in log   ~$ = estimated from pricing table
-```
+**Session breakdown** — per-session detail for a specific date (`/token-stats 2026-03-30`):
 
-**Session breakdown** (per day):
+![Session breakdown](https://raw.githubusercontent.com/clawlabz/token-stats/main/screenshots/daily.jpg)
 
-```
-Time    Source                 Project           Msgs  TotalInput    Output  CacheHit%          Cost  Topic
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-02:17   claude                 work/claw          441       44.8M     99.2K      98.0%   ~$  17.96  整体迁移完毕了吗
-08:24   openclaw/main          clawd              231       20.1M    815.8K      56.5%    $  48.45  ClawHealth审查
-```
+**Model breakdown** — 30-day breakdown by model with cost (`/token-stats --source claude --models`):
 
-**Model breakdown**:
+![Model breakdown](https://raw.githubusercontent.com/clawlabz/token-stats/main/screenshots/day30-claude.jpg)
 
-```
-Short           Model ID                                  TotalInput    Output     Total          Cost
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Opus4.6         claude-opus-4-6                               435.2M    464.5K    435.7M  ~$ 160.56
-Sonnet4.6       claude-sonnet-4-6                             176.8M      1.3M    178.0M  ~$ 117.07
-Haiku4.5        claude-haiku-4-5-20251001                       3.1M     40.2K      3.2M   $   0.89
-GPT5.4          gpt-5.4                                       853.1M      1.6M    854.8M  ~$   0.00
-```
+Column reference:
+- **TotalInput** = `input + cache_write + cache_read` — all tokens the model processed on input
+- **CacheHit%** = `cache_read / TotalInput` — higher = more cache reuse (much cheaper per token)
+- **Total** = TotalInput + Output
+- **Cost** — `$` stored natively in log; `~$` estimated at API list prices (not actual subscription billing)
 
 Column reference:
 - **TotalInput** = `input + cache_write + cache_read` — all tokens the model processed on input
