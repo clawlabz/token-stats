@@ -9,37 +9,41 @@ No API calls required. Reads from `~/.claude/projects/` on your machine.
 **Daily summary** (default):
 
 ```
-Date         Sessions      Input    Output  CacheCreate     CacheRead  HitRatio   Cost(USD)  Models
-────────────────────────────────────────────────────────────────────────────────────────────────────
-2026-03-30          7      1,246   202,232    1,752,681    81,541,542     97.9% $   34.07  Sonnet
-2026-03-29          7      3,902   360,066    3,524,440   280,678,766     98.8% $  102.83  Opus+Sonnet
-...
-TOTAL             158 44,044,560 9,508,643  175,982,936 6,672,339,059     96.8% $ 2936.40
+Date          Sess  TotalInput    Output  (CacheHit%)      Total   Cost(USD)  Models
+                    =inp+cc+cr           cr/(inp+cc+cr)
+───────────────────────────────────────────────────────────────────────────────────────────────
+2026-03-30       8       86.3M    215.5K        97.8%      86.5M $   35.52  Sonnet
+2026-03-29       7      284.2M    360.1K        98.8%     284.6M $  102.83  Opus+Sonnet
+───────────────────────────────────────────────────────────────────────────────────────────────
+TOTAL           14      370.5M    575.5K        98.5%     371.1M $  138.36
+
+  TotalInput breakdown: fresh=5.2K  cache_write=5.4M  cache_read=365.1M
 ```
 
 **Session breakdown** (per day):
 
 ```
-Time          Project              Messages     Input   Output  CacheCreate     CacheRead   HR%      Cost  Models        Topic
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-00:21         work/claw                 112       134   25,362      245,686    15,041,752   98% $  5.81  Sonnet  litebase迁移完毕了吗？
-02:17         work/claw                 441       626   99,167      873,874    43,963,929   98% $ 17.96  Sonnet  整体迁移完毕了吗？还有遗留事项吗
+Time    Project             Msgs  TotalInput    Output  CacheHit%     Total      Cost  Models      Topic
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+00:21   work/claw            112       15.3M     25.4K      98.4%     15.3M $  5.81  Sonnet  litebase迁移完毕了吗？
+02:17   work/claw            441       44.8M     99.2K      98.0%     44.9M $ 17.96  Sonnet  整体迁移完毕了吗？还有遗留事项吗
+
+  TotalInput = fresh(1.3K) + cache_write(1.9M) + cache_read(84.1M)
 ```
 
 **Model breakdown**:
 
 ```
-Model                                    Input    Output     CacheRead   Cost(USD)
-────────────────────────────────────────────────────────────────────────────────
-claude-opus-4-6                      7,451,990 8,064,789 6,510,381,462 $ 2732.54
-claude-opus-4-6-thinking            34,311,728 1,032,081    21,607,016 $  124.90
-claude-sonnet-4-6                    2,280,842   411,773   140,350,581 $   78.96
+Model                                TotalInput    Output     Total   Cost(USD)
+─────────────────────────────────────────────────────────────────────────────────────
+claude-opus-4-6                          252.1M    265.5K    252.4M $   89.83
+claude-sonnet-4-6                        118.4M    310.0K    118.7M $   48.53
 ```
 
 Column reference:
-- **HitRatio** = `CacheRead / (Input + CacheCreate + CacheRead)` — higher is better (saves cost)
-- **CacheCreate** — tokens written to cache (costs 1.25x input price, paid once)
-- **CacheRead** — tokens read from cache (costs 0.10x input price, very cheap)
+- **TotalInput** = `input_tokens + cache_creation_tokens + cache_read_tokens` — all tokens the model actually processed on the input side
+- **CacheHit%** = `cache_read / TotalInput` — higher means more cache reuse (much cheaper per token)
+- **Total** = TotalInput + Output — grand total tokens processed
 - **Cost** — estimated cost at API list prices (not actual Max subscription billing)
 
 ## Installation
